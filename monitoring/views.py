@@ -141,3 +141,9 @@ def order_status(request, order_id):
         
     except json.JSONDecodeError:
         return JsonResponse({"error": "JSON inválido"}, status=400)
+    
+
+
+@csrf_exempt
+def health_check(request):
+    return JsonResponse({"status": "ok"}, status=200)
