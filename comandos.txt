@@ -1,0 +1,106 @@
+rm -rf Sprint2-ASR2
+
+sudo apt update
+sudo apt install -y git python3-pip
+git clone https://github.com/valentinajtovar/Sprint2-ASR2.git
+cd Sprint2-ASR2
+pip3 install -r requirements.txt --break-system-packages
+
+sudo apt install postgresql-client -y
+psql -h orders-db.clccwmusmo2r.us-east-1.rds.amazonaws.com -U user_db -d postgres -W
+
+
+SELECT md5(random()::text)      -- operaciones CPU-bound
+FROM generate_series(1, 800000) -- 800 000 filas por conexión
+WHERE random() > 0.5;           -- agrega algo de selección aleatoria
+
+
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+SELECT encode(digest(random()::text || clock_timestamp()::text, 'sha512'), 'hex')
+FROM generate_series(1, 200000);
+
+
+
+-- crea dos series grandes y haz cross join (¡muy peligroso!)
+SELECT count(*)
+FROM generate_series(1,9000000) a
+CROSS JOIN generate_series(1,9000000) b;
+
+
+
+
+
+#app mandar info
+
+# Instalar módulo para crear entornos virtuales
+sudo apt install -y python3-venv
+
+# Crear un entorno llamado venv-locust
+python3 -m venv venv-locust
+
+# Activar el entorno
+source venv-locust/bin/activate
+
+# Verifica que estás dentro (deberías ver (venv-locust) al inicio del prompt)
+which python
+# debería mostrar algo como: /home/ubuntu/venv-locust/bin/python
+
+# Ahora instala Locust dentro del entorno
+pip install --upgrade pip
+pip install locust
+
+
+
+
+from locust import HttpUser, task, between, LoadTestShape
+import random, os
+
+BASE_URL = os.getenv("BASE_URL", "http://alb-monolito-183015172.us-east-1.elb.amazonaws.com")
+GET_PATH = "/orders/"
+POST_PATH = "/orders/update/"
+
+class OrdersUser(HttpUser):
+    wait_time = between(0.1, 0.5)
+    host = BASE_URL
+
+    @task(3)  # 60% consultas
+    def get_orders(self):
+        with self.client.get(GET_PATH, name="GET /orders", catch_response=True) as r:
+            if r.status_code != 200:
+                r.failure(f"Status {r.status_code}")
+
+    @task(2)  # 40% actualizaciones
+    def update_order(self):
+        payload = {
+            "order_id": random.randint(1, 10000),
+            "status": random.choice(["created", "paid", "shipped", "delivered", "cancelled"])
+        }
+        headers = {"Content-Type": "application/json"}
+        with self.client.post(POST_PATH, json=payload, headers=headers, name="POST /orders/update", catch_response=True) as r:
+            if r.status_code not in (200, 201, 204):
+                r.failure(f"Status {r.status_code}")
+
+class StepLoadShape(LoadTestShape):
+    target_users = int(os.getenv("TARGET_USERS", "1200"))
+    ramp_seconds = int(os.getenv("RAMP_SECONDS", "120"))
+    hold_seconds = int(os.getenv("HOLD_SECONDS", "600"))
+
+    def tick(self):
+        run_time = self.get_run_time()
+        if run_time < self.ramp_seconds:
+            users = int(self.target_users * (run_time / self.ramp_seconds))
+            return (max(users, 1), max(users // 10, 1))
+        elif run_time < self.ramp_seconds + self.hold_seconds:
+            return (self.target_users, max(self.target_users // 10, 1))
+        else:
+            return None
+
+
+
+
+
+locust -f locustfile.py --headless --only-summary \
+  --csv results_asr \
+  --run-time 12m

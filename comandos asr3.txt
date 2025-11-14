@@ -1,0 +1,145 @@
+
+sudo apt update && sudo apt install -y python3 python3-venv python3-pip git
+cd ~
+git clone https://github.com/valentinajtovar/ISIS2503-MonitoringAppSprint2.git
+cd ISIS2503-MonitoringAppSprint2
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pip install psycopg2-binary
+pip install pika psycopg2-binary
+
+echo export AUTH0_DOMAIN=dev-2k5s57btv47eoqr8.us.auth0.com >> ~/.bashrc
+echo export AUTH0_AUDIENCE=https://monitoringapp.api >> ~/.bashrc
+echo export AUTH0_CLIENT_ID=OZrxShlRMod36MsvxM72Wk5z6C4y2vq2 >> ~/.bashrc
+echo export AUTH0_CLIENT_SECRET=HAHJcuFC6RdX11H1WoSFm_NRWDSh5E_V0ys3Fk1rdEmzhX3EBXSwDSbAK7fC2Tr6 >> ~/.bashrc
+echo export RDS_ENDPOINT=monitoring-db.clccwmusmo2r.us-east-1.rds.amazonaws.com >> ~/.bashrc
+echo export RDS_USER=monitoring_user >> ~/.bashrc
+echo export RDS_PASS=isis2503 >> ~/.bashrc
+echo export RDS_DB=monitoring_db >> ~/.bashrc
+
+
+
+psql -h monitoring-db.clccwmusmo2r.us-east-1.rds.amazonaws.com \
+     -U monitoring_user \
+     -d postgres
+
+
+CREATE DATABASE monitoring_db OWNER monitoring_user;
+GRANT ALL PRIVILEGES ON DATABASE monitoring_db TO monitoring_user;
+\q
+
+
+nano monitoring/settings.py
+
+
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.postgresql_psycopg2",
+        "NAME": "postgres",
+        "USER": "monitoring_user",
+        "PASSWORD": "isis2503",
+        "HOST": "monitoring-db.clccwmusmo2r.us-east-1.rds.amazonaws.com",
+        "PORT": "5432",
+        "CONN_MAX_AGE": 60,
+    }
+}
+
+
+
+cd ~/ISIS2503-MonitoringAppSprint2
+source .venv/bin/activate
+
+python3 manage.py migrate
+
+
+
+cd ~/ISIS2503-MonitoringAppSprint2
+source .venv/bin/activate
+
+# por si había algo corriendo
+pkill -f "manage.py runserver" || true
+
+# levantar en 8080 con logs a archivo
+nohup python3 manage.py runserver 0.0.0.0:8080 > app.log 2>&1 &
+
+
+
+
+EC2 de prueba
+
+
+export PGPASSWORD='isis2503'
+
+psql -h monitoring-db.clccwmusmo2r.us-east-1.rds.amazonaws.com \
+    -U monitoring_user \
+    -d postgres <<'SQL'
+-- Tabla para guardar los checksums de integridad
+CREATE TABLE IF NOT EXISTS integrity_snapshot (
+  label text,
+  ts timestamptz default now(),
+  n_orders bigint,
+  checksum text
+);
+
+-- Snapshot ANTES del experimento
+INSERT INTO integrity_snapshot(label, n_orders, checksum)
+SELECT
+  'before_experiment',
+  COUNT(*),
+  md5(
+    string_agg(
+      concat_ws('|', id, status, updated_at::text, version::text),
+      '||' ORDER BY id
+    )
+  )
+FROM orders_order;
+SQL
+
+
+export AUTH0_DOMAIN="dev-2k5s57btv47eoqr8.us.auth0.com"
+export AUTH0_AUDIENCE="https://monitoringapp.api"
+export AUTH0_CLIENT_ID="OZrxShlRMod36MsvxM72Wk5z6C4y2vq2"
+export AUTH0_CLIENT_SECRET="HAHJcuFC6RdX11H1WoSFm_NRWDSh5E_V0ys3Fk1rdEmzhX3EBXSwDSbAK7fC2Tr6"
+
+
+
+
+curl --request POST "https://$AUTH0_DOMAIN/oauth/token" \
+  --header 'content-type: application/json' \
+  --data "{
+    \"client_id\":\"$AUTH0_CLIENT_ID\",
+    \"client_secret\":\"$AUTH0_CLIENT_SECRET\",
+    \"audience\":\"$AUTH0_AUDIENCE\",
+    \"grant_type\":\"client_credentials\"
+}"
+
+
+TOKEN_JSON=$(curl --silent --request POST "https://$AUTH0_DOMAIN/oauth/token" \
+  --header 'content-type: application/json' \
+  --data "{
+    \"client_id\":\"$AUTH0_CLIENT_ID\",
+    \"client_secret\":\"$AUTH0_CLIENT_SECRET\",
+    \"audience\":\"$AUTH0_AUDIENCE\",
+    \"grant_type\":\"client_credentials\"
+}")
+
+echo "$TOKEN_JSON"   # <-- para verificar que sí hay JSON
+
+
+
+ACCESS_TOKEN_OPERARIO=$(echo "$TOKEN_JSON" | python3 -c "import sys, json; data=sys.stdin.read(); print(json.loads(data)['access_token'])")
+
+echo "$ACCESS_TOKEN_OPERARIO"
+
+
+APP_HOST="monitoring-db.clccwmusmo2r.us-east-1.rds.amazonaws.com"
+curl -i -X PATCH "http://$APP_HOST/orders/1/" \
+  -H "Authorization: Bearer $ACCESS_TOKEN_OPERARIO" \
+  -H "Content-Type: application/json" \
+  -d '{"status":"IN_PROGRESS","version":1}'
+
+
+
+
+
